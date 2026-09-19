@@ -9,13 +9,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import Attachment, AuditEvent, Notification, User, WorkOrder, utcnow
-from .schemas import Login, OrderCreate, OrderOut, OrderUpdate, SampleAttachment, UserCreate, UserOut
-from .security import DUMMY_HASH, create_token, current_user, is_manager, passwords
-from .services import get_order, record, update_order, visible_orders
+from .models import Attachment, AuditEvent, Comment, Notification, TicketLink, User, WorkOrder, utcnow
+from .schemas import CommentCreate, Login, OrderCreate, OrderOut, OrderUpdate, SampleAttachment, UserCreate, UserOut
+from .security import DUMMY_HASH, create_token, current_user, passwords
+from .services import can_work, get_order, new_order, record, update_order, visible_orders
 
-app = FastAPI(title="ManageX Hub API", version="0.1.0")
+app = FastAPI(title="ManageX Hub IT Workflow API", version="0.2.0")
 SAMPLES = {
+    "troubleshooting-note": "SAMPLE ONLY — CST troubleshooting record\nDevice: DEMO-LAPTOP\nObserved: Fictional VPN error\nAction: Verify client version and record the result.\n",
+    "change-checklist": "SAMPLE ONLY — IT change checklist\n[ ] Document test result\n[ ] Confirm review\n[ ] Record rollback steps\n",
     "inspection-checklist": "SAMPLE ONLY — Fictional inspection checklist\n[ ] Inspect exterior\n[ ] Verify signage\n[ ] Record observations\n",
     "maintenance-note": "SAMPLE ONLY — Fictional maintenance note\nLocation: Example facility\nObservation: Demonstration item, no real facility data.\n",
 }
@@ -43,8 +45,8 @@ def me(user: User = Depends(current_user)):
 
 @app.get("/api/users", response_model=list[UserOut])
 def users(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    if not is_manager(user):
-        raise HTTPException(403, "Supervisor access required")
+    if user.role == "requester":
+        raise HTTPException(403, "Staff access required")
     return db.scalars(select(User).order_by(User.name)).all()
 
 
@@ -53,7 +55,11 @@ def create_user(data: UserCreate, user: User = Depends(current_user), db: Sessio
     if user.role != "administrator":
         raise HTTPException(403, "Administrator access required")
     account = User(
-        email=data.email.lower(), name=data.name, role=data.role, password_hash=passwords.hash(data.password)
+        email=data.email.lower(),
+        name=data.name,
+        role=data.role,
+        team=data.team,
+        password_hash=passwords.hash(data.password),
     )
     db.add(account)
     try:
@@ -65,8 +71,17 @@ def create_user(data: UserCreate, user: User = Depends(current_user), db: Sessio
     return account
 
 
-def filtered(user, q, status, priority, kind):
+def filtered(user, q, status, priority, kind, team="", mine=False):
     query = visible_orders(user)
+    if kind != "legacy":
+        query = query.where(WorkOrder.kind.not_in(["maintenance", "inspection"]))
+    else:
+        query = query.where(WorkOrder.kind.in_(["maintenance", "inspection"]))
+        kind = ""
+    if team:
+        query = query.where(WorkOrder.team == team)
+    if mine:
+        query = query.where(WorkOrder.assignee_id == user.id)
     if q:
         pattern = f"%{q}%"
         query = query.where(
@@ -78,62 +93,58 @@ def filtered(user, q, status, priority, kind):
     return query.order_by(WorkOrder.created_at.desc(), WorkOrder.id.desc())
 
 
-@app.get("/api/work-orders", response_model=list[OrderOut])
+@app.get("/api/tickets", response_model=list[OrderOut])
 def list_orders(
     q: str = "",
     status: str = "",
     priority: str = "",
     kind: str = "",
+    team: str = "",
+    mine: bool = False,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    return db.scalars(filtered(user, q, status, priority, kind).offset(offset).limit(limit)).all()
+    return db.scalars(filtered(user, q, status, priority, kind, team, mine).offset(offset).limit(limit)).all()
 
 
-@app.post("/api/work-orders", response_model=OrderOut, status_code=201)
+@app.post("/api/tickets", response_model=OrderOut, status_code=201)
 def create_order(data: OrderCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    if user.role == "technician":
-        raise HTTPException(403, "Technicians update assigned work; requesters submit work")
-    order = WorkOrder(**data.model_dump(), requester_id=user.id)
-    db.add(order)
-    db.flush()
-    record(db, order, user, "created", "Status: submitted — request created")
-    managers = db.scalars(select(User).where(User.role.in_(["supervisor", "administrator"]))).all()
-    for manager in managers:
-        if manager.id != user.id:
-            db.add(Notification(user_id=manager.id, message=f"New request WO-{order.id:04d}: {order.title}"))
+    order = new_order(db, user, data)
     db.commit()
     db.refresh(order)
     return order
 
 
-@app.get("/api/work-orders/{order_id}", response_model=OrderOut)
+@app.get("/api/tickets/{order_id}", response_model=OrderOut)
 def read_order(order_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return get_order(db, user, order_id)
 
 
-@app.patch("/api/work-orders/{order_id}", response_model=OrderOut)
+@app.patch("/api/tickets/{order_id}", response_model=OrderOut)
 def patch_order(order_id: int, data: OrderUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return update_order(db, get_order(db, user, order_id), user, data)
 
 
-@app.get("/api/work-orders/{order_id}/history")
+@app.get("/api/tickets/{order_id}/history")
 def history(order_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     get_order(db, user, order_id)
+    # Legacy audit entries may contain notes predating the public/internal split.
+    if user.role == "requester":
+        return []
     return db.scalars(
         select(AuditEvent).where(AuditEvent.work_order_id == order_id).order_by(AuditEvent.id.desc())
     ).all()
 
 
-@app.get("/api/work-orders/{order_id}/attachments")
+@app.get("/api/tickets/{order_id}/attachments")
 def attachments(order_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     get_order(db, user, order_id)
     return db.scalars(select(Attachment).where(Attachment.work_order_id == order_id)).all()
 
 
-@app.post("/api/work-orders/{order_id}/attachments", status_code=201)
+@app.post("/api/tickets/{order_id}/attachments", status_code=201)
 def attach(order_id: int, data: SampleAttachment, user: User = Depends(current_user), db: Session = Depends(get_db)):
     order = get_order(db, user, order_id)
     if order.status == "closed":
@@ -153,7 +164,7 @@ def attach(order_id: int, data: SampleAttachment, user: User = Depends(current_u
     return attachment
 
 
-@app.get("/api/work-orders/{order_id}/attachments/{attachment_id}")
+@app.get("/api/tickets/{order_id}/attachments/{attachment_id}")
 def download(order_id: int, attachment_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     get_order(db, user, order_id)
     attachment = db.get(Attachment, attachment_id)
@@ -172,13 +183,20 @@ def aware(value):
 
 @app.get("/api/dashboard")
 def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    orders = db.scalars(visible_orders(user)).all()
+    orders = db.scalars(visible_orders(user).where(WorkOrder.kind.not_in(["maintenance", "inspection"]))).all()
     active = [o for o in orders if o.status != "closed"]
     durations = [(aware(o.closed_at) - aware(o.created_at)).total_seconds() / 86400 for o in orders if o.closed_at]
     categories = {}
     for order in orders:
         categories[order.category] = categories.get(order.category, 0) + 1
     return {
+        "unassigned": sum(1 for o in active if o.assignee_id is None),
+        "blocked": sum(1 for o in active if o.status == "blocked"),
+        "my_open": sum(1 for o in active if o.assignee_id == user.id),
+        "teams": {
+            team: sum(1 for o in active if o.team == team)
+            for team in ["cst", "cybersecurity", "development", "it_operations"]
+        },
         "open": len(active),
         "overdue": sum(1 for o in active if o.due_at and aware(o.due_at) < utcnow()),
         "average_completion_days": round(sum(durations) / len(durations), 1) if durations else None,
@@ -201,12 +219,14 @@ def csv_safe(value):
     )
 
 
-@app.get("/api/reports/work-orders.csv")
+@app.get("/api/reports/tickets.csv")
 def export(
     q: str = "",
     status: str = "",
     priority: str = "",
     kind: str = "",
+    team: str = "",
+    mine: bool = False,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -218,6 +238,8 @@ def export(
         "location",
         "category",
         "kind",
+        "team",
+        "restricted",
         "priority",
         "status",
         "requester_id",
@@ -227,19 +249,23 @@ def export(
         "closed_at",
     ]
     writer.writerow(fields)
-    for order in db.scalars(filtered(user, q, status, priority, kind)):
+    for order in db.scalars(filtered(user, q, status, priority, kind, team, mine)):
         writer.writerow([csv_safe(getattr(order, field)) for field in fields])
     return Response(
         buffer.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="managex-work-orders.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="managex-tickets.csv"'},
     )
 
 
 @app.get("/api/notifications")
 def notifications(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    visible_ids = visible_orders(user).with_only_columns(WorkOrder.id)
     return db.scalars(
-        select(Notification).where(Notification.user_id == user.id).order_by(Notification.id.desc()).limit(50)
+        select(Notification)
+        .where(Notification.user_id == user.id, Notification.work_order_id.in_(visible_ids))
+        .order_by(Notification.id.desc())
+        .limit(50)
     ).all()
 
 
@@ -248,6 +274,60 @@ def mark_read(notification_id: int, user: User = Depends(current_user), db: Sess
     item = db.get(Notification, notification_id)
     if not item or item.user_id != user.id:
         raise HTTPException(404, "Notification not found")
+    if item.work_order_id is None:
+        raise HTTPException(404, "Notification not found")
+    get_order(db, user, item.work_order_id)
     item.read = True
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/tickets/{order_id}/comments")
+def comments(order_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    get_order(db, user, order_id)
+    query = select(Comment).where(Comment.work_order_id == order_id)
+    if user.role == "requester":
+        query = query.where(Comment.internal.is_(False))
+    return db.scalars(query.order_by(Comment.id)).all()
+
+
+@app.post("/api/tickets/{order_id}/comments", status_code=201)
+def add_comment(order_id: int, data: CommentCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    order = get_order(db, user, order_id)
+    if order.status == "closed":
+        raise HTTPException(409, "Closed tickets are read-only")
+    if data.internal and user.role == "requester":
+        raise HTTPException(403, "Only staff may write internal notes")
+    comment = Comment(work_order_id=order_id, author_id=user.id, **data.model_dump())
+    db.add(comment)
+    record(db, order, user, "comment", "Internal note added" if data.internal else "Requester-visible reply added")
+    db.commit()
+    db.refresh(comment)
+    return comment
+
+
+@app.get("/api/tickets/{order_id}/related", response_model=list[OrderOut])
+def related(order_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    get_order(db, user, order_id)
+    # No hidden titles, identifiers, counts or status leak through links.
+    linked = (
+        select(TicketLink.target_id)
+        .where(TicketLink.source_id == order_id)
+        .union(select(TicketLink.source_id).where(TicketLink.target_id == order_id))
+    )
+    return db.scalars(visible_orders(user).where(WorkOrder.id.in_(linked))).all()
+
+
+@app.post("/api/tickets/{order_id}/tasks", status_code=201)
+def create_task(order_id: int, data: OrderCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    source = get_order(db, user, order_id)
+    if user.role == "requester" or not can_work(user, source):
+        raise HTTPException(403, "Owning team or supervisor access required")
+    if source.status == "closed":
+        raise HTTPException(409, "Closed tickets are read-only")
+    target = new_order(db, user, data)
+    db.add(TicketLink(source_id=source.id, target_id=target.id))
+    record(db, source, user, "linked", "Related task created; visibility follows the destination team's access rules")
+    target_id = target.id
+    db.commit()
+    return {"id": target_id, "visible": db.scalar(visible_orders(user).where(WorkOrder.id == target_id)) is not None}

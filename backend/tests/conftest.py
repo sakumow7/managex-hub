@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
-
 from app.db import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import User  # noqa: E402
@@ -20,18 +19,28 @@ def client():
     url = os.environ.get("TEST_DATABASE_URL", "sqlite://")
     kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if url == "sqlite://" else {}
     engine = create_engine(url, **kwargs)
-    # TEST_DATABASE_URL must point to a disposable, dedicated test database.
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)
     with session() as db:
-        for index, role in enumerate(
-            ["requester", "technician", "supervisor", "administrator", "requester", "technician"], 1
+        for index, (role, team) in enumerate(
+            [
+                ("requester", "cst"),
+                ("technician", "cst"),
+                ("supervisor", "cst"),
+                ("administrator", "it_operations"),
+                ("requester", "cst"),
+                ("technician", "development"),
+                ("technician", "cybersecurity"),
+                ("technician", "it_operations"),
+            ],
+            1,
         ):
             db.add(
                 User(
                     email=f"user{index}@example.com",
                     name=f"User {index}",
                     role=role,
+                    team=team,
                     password_hash=passwords.hash("TestPassword123!"),
                 )
             )

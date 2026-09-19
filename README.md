@@ -1,8 +1,8 @@
 # ManageX Hub
 
-A portfolio starter for maintenance work orders and inspections. Requesters submit work, supervisors assign technicians, technicians record progress, and leaders see workload trends.
+An internal IT workflow prototype focused on **CST trouble-ticket tracking**. Requesters report issues, supervisors triage and assign, agents troubleshoot and reply, and other departments receive linked tasks. There is no billing or SaaS onboarding.
 
-All seeded facilities, people, requests, and attachments are fictional. This project contains no government processes or operational data.
+All seeded people, devices, requests, and attachments are fictional. Start with the [15-minute CST evaluation](docs/cst-evaluation.md) to see whether this workflow fits your work.
 
 ![ManageX Hub dashboard with fictional requests](docs/dashboard.png)
 
@@ -30,32 +30,46 @@ docker compose up --build -d
 docker compose exec api python -m app.seed
 ```
 
-Open **http://localhost:8080**. API documentation is at **http://localhost:8000/docs**. The initial migration runs before the API starts. The seed command is explicit and skips databases that already contain users.
+Open **http://localhost:8080**. API documentation is at **http://localhost:8000/docs**. Migrations run before the API starts. IT seeding is explicit and idempotent: it preserves existing accounts and records, adds missing demo users, and inserts IT sample scenarios once. Existing maintenance records are available with the Legacy maintenance records filter.
 
 | Demo email | Role |
 | --- | --- |
 | requester@example.com | Submit and track own requests |
-| technician@example.com | Update assigned work |
+| technician@example.com | CST agent: team queue, progress, internal notes and replies |
 | supervisor@example.com | Prioritize, assign, reopen completed work, close |
-| administrator@example.com | Supervisor access plus API user creation |
+| administrator@example.com | All queues, including restricted tasks, plus API user creation |
+| cyber@example.com | Cybersecurity agent |
+| developer@example.com | Development agent |
+| operations@example.com | IT Operations agent |
 
-All four accounts use the `DEMO_PASSWORD` you set. The example value is `SamplePass123!`; it is only a local demonstration password. Changing the environment variable after seeding does not change existing passwords.
+Newly seeded accounts use the `DEMO_PASSWORD` you set. The example value is `SamplePass123!`; it is only a local demonstration password. Changing the environment variable after seeding does not change existing passwords.
 
 Stop with `docker compose down`; the named database volume persists. Do not remove the volume unless you intend to erase its data.
 
-## What works in this starter
+## What works in this prototype
 
-- Password sign-in with Argon2 hashes and expiring JWTs; role and record access enforced in the API.
-- Maintenance and inspection requests with categories, priorities, due dates, assignment, and progress notes.
-- Workflow: `submitted → assigned → in_progress → completed → closed`. Assignment automatically moves submitted work to assigned. Completed work can return to in progress; closed work is read-only.
-- Per-order status history and audit events written in the same transaction as updates.
-- A sample attachment catalog and authenticated downloads. Arbitrary uploads are deliberately unsupported.
-- Dashboard with open/overdue work, submission-to-close average, completed count, and recurring categories.
-- Search, type/status/priority filtering, pagination, and CSV export with spreadsheet formula escaping.
-- Simulated in-app notifications with read tracking. No email is sent.
-- Administrator-only user creation through `POST /api/users`; user administration UI is a roadmap item.
+- CST trouble tickets, service requests, access requests, security tasks, bugs, department tasks, and change requests.
+- CST, Cybersecurity, Development, and IT Operations queues; a personal assigned-work view.
+- Supervisor assignment to agents in the owning team, prioritization, and ordinary-ticket transfers.
+- Workflow: submitted → assigned → in progress → completed → closed, with blocked work and reopening before closeout.
+- Requester-visible replies, staff-only internal notes, and staff audit history.
+- Linked cross-team tasks with independent status and visibility-aware links.
+- Restricted cybersecurity work enforced across API reads, links, metrics, notifications, and exports.
+- Open, unassigned, overdue, and blocked counts; search and status/priority/type filters; CSV exports.
+- Sample-only attachments, in-app notifications, and administrator user creation through the API.
 
-“Recurring issues” currently means repeated categories across visible requests; it is not equipment-level root-cause analysis. Dashboard metrics cover all visible records, while queue/export filters apply to their own results. Completed work remains open until supervisor closeout.
+Targets are due dates, not SLA timers. Access and change requests use the same prototype workflow and do not yet enforce approvals. Linked tasks do not automatically block parent closeout. See [architecture and permissions](docs/architecture.md) for exact access rules.
+
+## Upgrade an existing local installation
+
+Keep your existing `.env` and database volume, then run:
+
+```sh
+docker compose up --build -d --wait
+docker compose exec api python -m app.seed
+```
+
+Refresh the browser at http://localhost:8080. The IT migration adds fields and tables without deleting prior records. Stop any separate local Uvicorn instance before starting Docker, because both use port 8000.
 
 ## Local development
 
@@ -115,7 +129,7 @@ API tests use isolated SQLite by default. To verify against PostgreSQL, set `TES
 
 A ready-to-enable workflow is in [docs/github-actions-ci.yml](docs/github-actions-ci.yml). Move it to `.github/workflows/ci.yml` and commit through a GitHub login with workflow permission to activate PostgreSQL, container, and browser checks. It is stored as a template because the GitHub CLI login used to create this repository did not have the `workflow` scope.
 
-Initial local verification: 16 API/unit tests passed, 3 browser tests passed, lint passed, and the production frontend built successfully. Desktop and mobile views were inspected. Docker and PostgreSQL checks have not yet run; local verification used SQLite.
+IT prototype verification: 20 API/unit tests passed on both SQLite and a dedicated PostgreSQL database; 4 browser tests passed against Docker. The frontend production build, Docker startup, and Alembic schema check passed.
 
 ## Repository layout
 
@@ -135,7 +149,7 @@ See [architecture and permissions](docs/architecture.md), [roadmap](docs/roadmap
 
 ## Starter boundaries
 
-This is a local development and portfolio foundation. Before a public deployment, add HTTPS, login throttling, account recovery/revocation, operational monitoring, backups, and a proper secret store. Demo credentials and the default database password must be replaced. Audit events are application-managed and are not a tamper-proof compliance ledger. There is no tenant separation or organizational data model yet.
+This is a local, single-organization evaluation prototype. Use fictional scenarios initially. Operational use requires your organization’s approval of the hosting environment and data scope, appropriate identity/account lifecycle, HTTPS, backups, and monitoring. Audit events are application-managed, not a tamper-proof compliance ledger. Subscription billing and multi-customer tenancy are outside the current scope.
 
 Dependency versions used for verification are recorded in `backend/requirements-lock.txt` and `frontend/package-lock.json`. `backend/requirements.txt` records the allowed direct dependency ranges. Update and re-lock intentionally.
 

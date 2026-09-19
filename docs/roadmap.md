@@ -1,30 +1,28 @@
-# Suggested development milestones
+# Internal evaluation roadmap
 
-## 1. Deepen the domain
+## Now: test CST ticket tracking
 
-- Assets and facility hierarchy, recurring inspection schedules, checklists, and inspection findings.
-- Due-date and request-detail editing with field-level audit entries.
-- Resolution codes, supervisor acceptance notes, and service-level targets.
-- Account management UI, activation/deactivation, password reset, and revocation.
+Use the [CST walkthrough](cst-evaluation.md) with fictional examples. Assess whether intake, triage, assignment, troubleshooting notes, requester replies, and closeout match how you want to work.
 
-## 2. Improve collaboration
+## Next, based on your feedback
 
-- Order comments, notification preferences, polling or real-time delivery.
-- Assignee availability, workload planning, and advanced report date ranges.
-- Asset/location recurrence analysis instead of category frequency alone.
+- Editable ticket details and due dates with clear audit history.
+- Required resolution summaries, resolution codes, and requester acceptance.
+- Ticket templates, a simple knowledge base, and duplicate detection.
+- Due-date reminders and business-hours response/resolution targets.
+- Real email intake and notifications if needed.
+- Account management UI and organization-approved identity integration.
 
-## 3. Prepare deployment
+## Expand team workflows only when needed
 
-- HTTPS, rate limits, secret management, persistent monitoring, backups and restore verification.
-- Tenant boundaries and database-level integrity constraints for domain values.
-- Structured logs, request IDs, dependency update automation, image scanning.
-- Move expensive dashboard queries to SQL and large exports to background jobs.
-- Make audit retention and tamper resistance match the actual operating requirements.
+- Approval steps for access and change requests.
+- Explicit dependencies and blocked-by relationships.
+- Multiple team memberships and team-scoped supervisors.
+- GitHub issue/PR references for developer handoffs.
+- Carefully designed uploads and approved storage.
 
-## 4. Expand tests and accessibility
+## Before operational use
 
-- PostgreSQL concurrency tests, migration rollback checks, and broader browser role coverage.
-- Automated accessibility checks and keyboard/screen-reader review.
-- Mobile workflows, expired sessions, network recovery, and larger datasets.
+Agree on an allowed data scope and hosting environment. Replace demo accounts, establish account recovery/revocation, enable appropriate transport security and monitoring, and exercise backup restoration. This is a local prototype for evaluating a workflow, not an approved workplace system.
 
-Keep sample attachments fictional. Any future upload feature needs its own explicit design for type/size limits, storage permissions, and scanning.
+Billing, subscriptions, monetization, and multiple customer organizations are outside the current scope.

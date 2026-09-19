@@ -4,90 +4,111 @@ import {
   ArrowDownToLine,
   ArrowRight,
   Bell,
-  CheckCircle2,
   ClipboardList,
   Clock3,
+  Code2,
+  Headset,
   LayoutDashboard,
+  LockKeyhole,
   LogOut,
   Plus,
   Search,
+  Server,
   ShieldCheck,
-  Wrench,
+  UserRound,
   X,
 } from "lucide-react";
 import { api, download, json, setToken } from "./api";
 import type {
   Attachment,
+  Comment,
   Dashboard,
   Event,
   Notification,
   Order,
   User,
 } from "./types";
-
-const label = (value: string) =>
-  value.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
-const date = (value: string | null) =>
-  value
-    ? new Date(value).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-      })
-    : "No due date";
-const statuses = [
-  "submitted",
-  "assigned",
-  "in_progress",
-  "completed",
-  "closed",
-];
-const priorities = ["low", "medium", "high", "urgent"];
-const categories = ["General", "Electrical", "Plumbing", "HVAC", "Safety"];
+import {
+  date,
+  kinds,
+  label,
+  priorities,
+  roleLabel,
+  statuses,
+  teams,
+  ticketId,
+} from "./domain";
+import TicketForm from "./TicketForm";
+import TicketDetail from "./TicketDetail";
+import { useDialog } from "./useDialog";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [stats, setStats] = useState<Dashboard | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [view, setView] = useState("overview");
+  const [view, setView] = useState("cst");
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [priority, setPriority] = useState("");
+  const [kind, setKind] = useState("");
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Order | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
+  const [comments, setComments] = useState<Comment[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [related, setRelated] = useState<Order[]>([]);
   const [creating, setCreating] = useState(false);
+  const [linkSource, setLinkSource] = useState<Order | null>(null);
   const refreshVersion = useRef(0);
-  const manager = user?.role === "supervisor" || user?.role === "administrator";
+  const closeDialog = useCallback(() => {
+    setCreating(false);
+    setSelected(null);
+    setLinkSource(null);
+    setError("");
+  }, []);
+  useDialog(
+    creating
+      ? "create"
+      : selected
+        ? `ticket-${selected.id}-${selected.team}`
+        : "",
+    closeDialog,
+  );
+  const staff = user?.role !== "requester";
   const filters = new URLSearchParams({
     q,
     status,
     priority,
-    kind: view === "inspections" ? "inspection" : "",
+    kind,
+    team: view in teams ? view : "",
+    mine: String(view === "mine"),
   }).toString();
-
   const refresh = useCallback(async () => {
     if (!user) return;
     const version = ++refreshVersion.current;
-    const [items, dashboard, inbox] = await Promise.all([
-      api<Order[]>(`/work-orders?${filters}&offset=${page * 20}&limit=20`),
-      api<Dashboard>("/dashboard"),
-      api<Notification[]>("/notifications"),
-    ]);
-    if (version !== refreshVersion.current) return;
-    setOrders(items);
-    setStats(dashboard);
-    setNotifications(inbox);
-    if (manager) {
-      const accounts = await api<User[]>("/users");
-      if (version === refreshVersion.current) setUsers(accounts);
+    setLoading(true);
+    try {
+      const [items, dashboard, inbox, people] = await Promise.all([
+        api<Order[]>(`/tickets?${filters}&offset=${page * 20}&limit=20`),
+        api<Dashboard>("/dashboard"),
+        api<Notification[]>("/notifications"),
+        user.role === "requester" ? Promise.resolve([]) : api<User[]>("/users"),
+      ]);
+      if (version !== refreshVersion.current) return;
+      setOrders(items);
+      setStats(dashboard);
+      setNotifications(inbox);
+      setUsers(people);
+    } finally {
+      if (version === refreshVersion.current) setLoading(false);
     }
-  }, [user, manager, filters, page]);
-
+  }, [user, filters, page]);
   useEffect(() => {
     refresh().catch((e) => setError(e.message));
     return () => {
@@ -95,45 +116,10 @@ export default function App() {
     };
   }, [refresh]);
 
-  useEffect(() => {
-    if (!creating && !selected) return;
-    const previous = document.activeElement as HTMLElement | null;
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
-    dialog
-      ?.querySelector<HTMLElement>("input, button, select, textarea")
-      ?.focus();
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setCreating(false);
-        setSelected(null);
-      }
-      if (event.key !== "Tab" || !dialog) return;
-      const controls = Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          "button:not(:disabled), input, select, textarea, a[href]",
-        ),
-      );
-      const first = controls[0],
-        last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      }
-      if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      previous?.focus();
-    };
-  }, [creating, selected?.id]);
-
   async function run(action: () => Promise<void>) {
-    setError("");
     setBusy(true);
+    setError("");
+    setNotice("");
     try {
       await action();
     } catch (e) {
@@ -142,57 +128,75 @@ export default function App() {
       setBusy(false);
     }
   }
-
   async function openOrder(order: Order) {
-    const [history, files] = await Promise.all([
-      api<Event[]>(`/work-orders/${order.id}/history`),
-      api<Attachment[]>(`/work-orders/${order.id}/attachments`),
+    const path = `/tickets/${order.id}`;
+    const [fresh, history, files, messages, links] = await Promise.all([
+      api<Order>(path),
+      api<Event[]>(path + "/history"),
+      api<Attachment[]>(path + "/attachments"),
+      api<Comment[]>(path + "/comments"),
+      api<Order[]>(path + "/related"),
     ]);
+    setSelected(fresh);
     setEvents(history);
     setAttachments(files);
-    setSelected(order);
+    setComments(messages);
+    setRelated(links);
   }
-
-  async function patch(body: unknown) {
-    if (!selected) return;
-    const updated = await api<Order>(
-      `/work-orders/${selected.id}`,
-      json("PATCH", body),
-    );
-    await openOrder(updated);
-    await refresh();
-  }
-
+  const navigate = (next: string) => {
+    setView(next);
+    setPage(0);
+    setQ("");
+    setStatus("");
+    setPriority("");
+    setKind("");
+    setNotice("");
+  };
+  const signOut = () => {
+    refreshVersion.current++;
+    setToken("");
+    setUser(null);
+    closeDialog();
+    setStats(null);
+    setOrders([]);
+    setUsers([]);
+    setNotifications([]);
+    setNotice("");
+  };
+  const brand = (
+    <div className="brand">
+      <span className="brand-icon">
+        <Headset size={22} />
+      </span>
+      ManageX<span>Hub</span>
+    </div>
+  );
   if (!user)
     return (
       <main className="login-layout">
         <section className="login-story">
-          <div className="brand">
-            <span className="brand-icon">
-              <Wrench size={22} />
-            </span>
-            ManageX<span>Hub</span>
-          </div>
+          {brand}
           <div>
-            <p className="eyebrow">KEEP GOOD WORK MOVING</p>
+            <p className="eyebrow">IT SUPPORT, CONNECTED</p>
             <h1>
-              Every request.
-              <br />A clear next step.
+              From trouble ticket
+              <br />
+              to resolution.
             </h1>
             <p>
-              Bring maintenance requests, inspections, and your team’s next
-              actions into one place.
+              One place for CST support, team handoffs, and the work behind
+              every resolved issue.
             </p>
             <div className="story-feature">
-              <ShieldCheck /> Clear ownership. Visible progress.
+              <ShieldCheck /> Clear ownership. A complete history.
             </div>
           </div>
-          <small>WORK ORDER & INSPECTION MANAGEMENT</small>
+          <small>INTERNAL IT WORKFLOW PROTOTYPE</small>
         </section>
         <section className="login-panel">
-          <p className="eyebrow">WELCOME BACK</p>
-          <h2>Sign in to your workspace</h2>
-          <p className="muted">A little clarity goes a long way.</p>
+          <p className="eyebrow">YOUR SERVICE DESK</p>
+          <h2>Sign in to ManageX</h2>
+          <p className="muted">Start with CST. Keep every team in the loop.</p>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -206,7 +210,9 @@ export default function App() {
                   }),
                 );
                 setToken(result.access_token);
-                setUser(await api<User>("/auth/me"));
+                const me = await api<User>("/auth/me");
+                setUser(me);
+                navigate(me.role === "requester" ? "all" : me.team);
               });
             }}
           >
@@ -216,8 +222,8 @@ export default function App() {
                 name="email"
                 type="email"
                 required
-                placeholder="supervisor@example.com"
                 autoComplete="username"
+                placeholder="supervisor@example.com"
               />
             </label>
             <label>
@@ -234,65 +240,78 @@ export default function App() {
                 {error}
               </p>
             )}
-            <button className="primary full" disabled={busy}>
-              Sign in <ArrowRight size={17} />
+            <button disabled={busy} className="primary full">
+              Sign in <ArrowRight size={16} />
             </button>
           </form>
           <div className="demo-note">
-            <strong>Sample workspace</strong>
+            <strong>Evaluate the CST workflow</strong>
             <p>
-              Use a seeded account: requester, technician, supervisor, or
-              administrator @example.com. The password is the DEMO_PASSWORD you
-              configured.
+              Sign in as supervisor, technician, or requester @example.com with
+              your configured demo password.
             </p>
-            <span>Fictional facilities · Sample files only</span>
+            <p>
+              Other demo accounts: cyber, developer, operations, administrator
+              @example.com.
+            </p>
+            <span>Local prototype · Fictional tickets · No billing</span>
           </div>
         </section>
       </main>
     );
 
   const unread = notifications.filter((n) => !n.read).length;
+  const title =
+    view in teams
+      ? teams[view as keyof typeof teams]
+      : {
+          all: "All tickets",
+          mine: "Assigned to me",
+          overview: "Operations overview",
+          notifications: "Notifications",
+        }[view] || "Tickets";
+  const navigation = [
+    ["cst", "CST Service Desk", Headset],
+    ["mine", "Assigned to me", UserRound],
+    ["all", "All tickets", ClipboardList],
+    ["overview", "Overview", LayoutDashboard],
+    ["cybersecurity", "Cybersecurity", ShieldCheck],
+    ["development", "Development", Code2],
+    ["it_operations", "IT Operations", Server],
+    ["notifications", "Notifications", Bell],
+  ] as const;
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-icon">
-            <Wrench size={21} />
-          </span>
-          ManageX<span>Hub</span>
-        </div>
-        <p className="workspace-label">WORKSPACE</p>
+        {brand}
+        <p className="workspace-label">IT WORKSPACE</p>
         <nav aria-label="Main navigation">
-          {(
-            [
-              ["overview", "Overview", LayoutDashboard],
-              ["work", "Work orders", ClipboardList],
-              ["inspections", "Inspections", ShieldCheck],
-              ["notifications", "Notifications", Bell],
-            ] as const
-          ).map(([key, title, Icon]) => (
-            <button
-              key={String(key)}
-              className={view === key ? "nav-item active" : "nav-item"}
-              onClick={() => {
-                setView(String(key));
-                setPage(0);
-              }}
-            >
-              <Icon size={18} />
-              {String(title)}
-              {key === "notifications" && unread > 0 && (
-                <span className="count">{unread}</span>
-              )}
-            </button>
-          ))}
+          {navigation
+            .filter(
+              ([key]) =>
+                user.role !== "requester" ||
+                ["all", "notifications"].includes(key),
+            )
+            .map(([key, text, Icon]) => (
+              <button
+                key={key}
+                className={view === key ? "nav-item active" : "nav-item"}
+                onClick={() => navigate(key)}
+              >
+                <Icon size={17} />
+                {text}
+                {key === "notifications" && unread > 0 && (
+                  <span className="count">{unread}</span>
+                )}
+              </button>
+            ))}
         </nav>
         <div className="sidebar-foot">
-          <span className="sample-dot" /> Sample workspace
+          <span className="sample-dot" /> Internal prototype
           <p>
-            Built for clarity.
+            CST trouble tickets.
             <br />
-            Ready for your next request.
+            Connected team workflows.
           </p>
         </div>
         <div className="profile">
@@ -304,22 +323,12 @@ export default function App() {
           </span>
           <div>
             <strong>{user.name}</strong>
-            <small>{label(user.role)}</small>
+            <small>{roleLabel(user.role)}</small>
           </div>
           <button
             className="icon-button"
             aria-label="Sign out"
-            onClick={() => {
-              setToken("");
-              setUser(null);
-              setSelected(null);
-              setStats(null);
-              setOrders([]);
-              setUsers([]);
-              setNotifications([]);
-              setCreating(false);
-              setError("");
-            }}
+            onClick={signOut}
           >
             <LogOut size={17} />
           </button>
@@ -328,35 +337,33 @@ export default function App() {
       <div className="main-shell">
         <header className="topbar">
           <span>
-            Workspace <span className="slash">/</span>{" "}
-            <strong>{view === "work" ? "Work orders" : label(view)}</strong>
+            IT workspace <span className="slash">/</span>
+            <strong>{title}</strong>
           </span>
-          <span className="environment">DEMO ENVIRONMENT</span>
+          <span className="environment">LOCAL PROTOTYPE</span>
         </header>
         <main className="content">
           <div className="page-heading">
             <div>
-              <p className="eyebrow">OPERATIONS, IN FOCUS</p>
-              <h1>
-                {view === "overview"
-                  ? "A clear view of the work."
-                  : view === "work"
-                    ? "Work orders"
-                    : label(view)}
-              </h1>
+              <p className="eyebrow">SUPPORT THAT MOVES WORK FORWARD</p>
+              <h1>{title}</h1>
               <p className="muted">
-                {view === "overview"
-                  ? "Know what needs attention. Keep your team moving."
-                  : "From the first request to the final check."}
+                {view === "cst"
+                  ? "Triage the issue. Assign an owner. Close the loop."
+                  : "Every request, owner, and next step in view."}
               </p>
             </div>
-            {user.role !== "technician" && (
-              <button className="primary" onClick={() => setCreating(true)}>
-                <Plus size={18} /> New request
-              </button>
-            )}
+            <button
+              className="primary"
+              onClick={() => {
+                setError("");
+                setCreating(true);
+              }}
+            >
+              <Plus size={18} /> New ticket
+            </button>
           </div>
-          {error && (
+          {error && !selected && !creating && (
             <div role="alert" className="error">
               {error}
               <button
@@ -368,22 +375,38 @@ export default function App() {
               </button>
             </div>
           )}
+          {notice && (
+            <div role="status" className="success-note">
+              {notice}
+            </div>
+          )}
           {view === "notifications" ? (
             <section className="panel">
               <div className="panel-title">
                 <h2>Your notifications</h2>
-                <span>In-app simulation</span>
+                <span>In-app updates</span>
               </div>
-              {notifications.length === 0 && (
+              {!notifications.length && (
                 <p className="empty">
-                  You’re all caught up. Updates to your work will appear here.
+                  No new activity. Updates to visible tickets appear here.
                 </p>
               )}
               {notifications.map((n) => (
                 <div className="notification" key={n.id}>
                   <Bell size={18} />
                   <div>
-                    <strong>{n.message}</strong>
+                    <button
+                      className="order-link"
+                      onClick={() =>
+                        void run(async () =>
+                          openOrder(
+                            await api<Order>(`/tickets/${n.work_order_id}`),
+                          ),
+                        )
+                      }
+                    >
+                      {n.message}
+                    </button>
                     <small>{date(n.created_at)}</small>
                   </div>
                   <button
@@ -404,93 +427,98 @@ export default function App() {
             </section>
           ) : (
             <>
-              {view === "overview" && stats && (
+              {stats && (
                 <>
-                  <section className="metrics" aria-label="Work summary">
+                  <section className="metrics" aria-label="Ticket summary">
                     {(
                       [
                         [
-                          "Open work orders",
+                          "Open tickets",
                           stats.open,
-                          "Awaiting final closeout",
+                          "Across your visible queues",
                           ClipboardList,
                           "green",
                         ],
                         [
-                          "Overdue items",
+                          "Unassigned",
+                          stats.unassigned,
+                          "Ready for triage",
+                          UserRound,
+                          "blue",
+                        ],
+                        [
+                          "Overdue",
                           stats.overdue,
-                          "Need a closer look",
+                          "Past the target date",
                           Clock3,
                           "orange",
                         ],
                         [
-                          "Avg. completion",
-                          stats.average_completion_days === null
-                            ? "—"
-                            : `${stats.average_completion_days}d`,
-                          "Submission to closeout",
+                          "Blocked",
+                          stats.blocked,
+                          "Waiting for the next step",
                           Activity,
                           "blue",
                         ],
-                        [
-                          "Completed work",
-                          stats.completed,
-                          "Completed + closed",
-                          CheckCircle2,
-                          "green",
-                        ],
                       ] as const
-                    ).map(([title, value, sub, Icon, color]) => (
-                      <article className="metric" key={String(title)}>
+                    ).map(([name, value, caption, Icon, color]) => (
+                      <article key={name} className="metric">
                         <div>
-                          <span>{String(title)}</span>
+                          <span>{name}</span>
                           <span className={`metric-icon ${color}`}>
                             <Icon size={19} />
                           </span>
                         </div>
-                        <strong>{value as string | number}</strong>
-                        <small>{String(sub)}</small>
+                        <strong>{value}</strong>
+                        <small>{caption}</small>
                       </article>
                     ))}
                   </section>
-                  <section className="insight">
-                    <span className="insight-icon">
-                      <Activity size={20} />
-                    </span>
-                    <div>
-                      <strong>See the patterns behind the requests</strong>
-                      <p>
-                        {stats.recurring_issues.length
-                          ? stats.recurring_issues
-                              .map((i) => `${i.category}: ${i.count} requests`)
-                              .join(" · ")
-                          : "Recurring categories will appear as more requests arrive."}
-                      </p>
+                  {view === "overview" ? (
+                    <div className="team-summary">
+                      {Object.entries(teams).map(([key, name]) => (
+                        <button key={key} onClick={() => navigate(key)}>
+                          <span>{name}</span>
+                          <strong>
+                            {stats.teams[key as keyof typeof teams]}
+                          </strong>
+                          <small>visible open tickets</small>
+                        </button>
+                      ))}
                     </div>
-                    <span className="tag">ALL-TIME TRENDS</span>
-                  </section>
+                  ) : (
+                    <section className="insight">
+                      <span className="insight-icon">
+                        <Headset size={20} />
+                      </span>
+                      <div>
+                        <strong>Start with a clear handoff</strong>
+                        <p>
+                          Keep the requester updated, capture internal notes,
+                          and link tasks for another team.
+                        </p>
+                      </div>
+                      <span className="tag">CST FIRST</span>
+                    </section>
+                  )}
                 </>
               )}
               <section className="panel">
                 <div className="panel-title">
                   <div>
-                    <h2>
-                      {view === "inspections"
-                        ? "Inspection queue"
-                        : "Work order queue"}
-                    </h2>
-                    <p>Priorities, people, and progress in one place.</p>
+                    <h2>{title} queue</h2>
+                    <p>Tickets and tasks you have permission to access.</p>
                   </div>
                   <button
+                    disabled={busy}
                     onClick={() =>
                       void run(() =>
                         download(
-                          `/reports/work-orders.csv?${filters}`,
-                          "managex-work-orders.csv",
+                          `/reports/tickets.csv?${filters}`,
+                          "managex-tickets.csv",
                         ),
                       )
                     }
-                    disabled={busy}
                   >
                     <ArrowDownToLine size={16} /> Export CSV
                   </button>
@@ -499,8 +527,8 @@ export default function App() {
                   <label className="search">
                     <Search size={17} />
                     <input
-                      aria-label="Search work orders"
-                      placeholder="Search requests, locations..."
+                      aria-label="Search tickets"
+                      placeholder="Search tickets, devices, services..."
                       value={q}
                       onChange={(e) => {
                         setQ(e.target.value);
@@ -538,16 +566,32 @@ export default function App() {
                       </option>
                     ))}
                   </select>
+                  <select
+                    aria-label="Filter ticket type"
+                    value={kind}
+                    onChange={(e) => {
+                      setKind(e.target.value);
+                      setPage(0);
+                    }}
+                  >
+                    <option value="">All IT types</option>
+                    {Object.entries(kinds).map(([key, name]) => (
+                      <option key={key} value={key}>
+                        {name}
+                      </option>
+                    ))}
+                    <option value="legacy">Legacy maintenance records</option>
+                  </select>
                 </div>
-                <div className="table-wrap">
+                <div className="table-wrap" aria-busy={loading}>
                   <table>
                     <thead>
                       <tr>
-                        <th>WORK ORDER</th>
+                        <th>TICKET / SERVICE</th>
                         <th>STATUS</th>
                         <th>PRIORITY</th>
-                        <th>ASSIGNED TO</th>
-                        <th>DUE DATE</th>
+                        <th>OWNER / TEAM</th>
+                        <th>TARGET DATE</th>
                         <th aria-label="Open" />
                       </tr>
                     </thead>
@@ -560,8 +604,10 @@ export default function App() {
                               onClick={() => void run(() => openOrder(o))}
                             >
                               <small>
-                                WO-{String(o.id).padStart(4, "0")}{" "}
-                                <span> / {o.kind}</span>
+                                {ticketId(o.id)} /{" "}
+                                {kinds[o.kind as keyof typeof kinds] ||
+                                  label(o.kind)}{" "}
+                                {o.restricted && <LockKeyhole size={10} />}
                               </small>
                               <strong>{o.title}</strong>
                               <span>
@@ -582,14 +628,14 @@ export default function App() {
                             </span>
                           </td>
                           <td>
-                            {o.assignee_id ? (
-                              users.find((u) => u.id === o.assignee_id)?.name ||
-                              (user.id === o.assignee_id
-                                ? user.name
-                                : `Technician #${o.assignee_id}`)
-                            ) : (
-                              <span className="muted">Unassigned</span>
-                            )}
+                            <span>
+                              {users.find((u) => u.id === o.assignee_id)
+                                ?.name ||
+                                (o.assignee_id
+                                  ? `Agent #${o.assignee_id}`
+                                  : "Unassigned")}
+                            </span>
+                            <small className="muted">{teams[o.team]}</small>
                           </td>
                           <td
                             className={
@@ -605,7 +651,7 @@ export default function App() {
                           <td>
                             <button
                               className="icon-button"
-                              aria-label={`Open work order ${o.id}`}
+                              aria-label={`Open ticket ${o.id}`}
                               onClick={() => void run(() => openOrder(o))}
                             >
                               <ArrowRight size={16} />
@@ -618,27 +664,42 @@ export default function App() {
                   {orders.length === 0 && (
                     <div className="empty">
                       <ClipboardList size={26} />
-                      <h3>No work orders here yet</h3>
-                      <p>Create a request or adjust your filters.</p>
+                      <h3>
+                        {loading
+                          ? "Loading tickets…"
+                          : "No visible tickets in this queue"}
+                      </h3>
+                      <p>
+                        Try another filter or create a ticket. Restricted work
+                        is only shown to authorized teams.
+                      </p>
                     </div>
                   )}
                 </div>
                 <div className="table-footer">
                   <span>
-                    Showing {orders.length} requests · Page {page + 1}
+                    {loading
+                      ? "Refreshing…"
+                      : `Showing ${orders.length} tickets · Page ${page + 1}`}
                   </span>
                   <div>
                     <button
-                      disabled={page === 0}
+                      disabled={!page || loading}
                       onClick={() => setPage(page - 1)}
                     >
                       Previous
                     </button>
                     <button
-                      disabled={orders.length < 20}
+                      disabled={orders.length < 20 || loading}
                       onClick={() => setPage(page + 1)}
                     >
                       Next
+                    </button>
+                    <button
+                      disabled={loading}
+                      onClick={() => void run(refresh)}
+                    >
+                      Refresh
                     </button>
                   </div>
                 </div>
@@ -646,307 +707,118 @@ export default function App() {
             </>
           )}
           <footer className="page-footer">
-            <span>ManageX Hub</span> Good work starts with a clear plan.
+            <span>ManageX Hub · IT workflow prototype</span>Fictional evaluation
+            data
           </footer>
         </main>
       </div>
       {creating && (
-        <div className="modal-backdrop">
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="create-title"
-          >
-            <div className="panel-title">
-              <h2 id="create-title">New request</h2>
-              <button
-                aria-label="Close new request"
-                className="icon-button"
-                onClick={() => setCreating(false)}
-              >
-                <X />
-              </button>
-            </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const data = Object.fromEntries(new FormData(e.currentTarget));
-                void run(async () => {
-                  await api(
-                    "/work-orders",
-                    json("POST", {
-                      ...data,
-                      due_at: data.due_at
-                        ? new Date(String(data.due_at)).toISOString()
-                        : null,
-                    }),
-                  );
-                  setCreating(false);
-                  setPage(0);
-                  await refresh();
-                });
-              }}
-            >
-              <label>
-                Request title
-                <input
-                  autoFocus
-                  name="title"
-                  minLength={3}
-                  maxLength={160}
-                  required
-                  placeholder="What needs attention?"
-                />
-              </label>
-              <label>
-                Description
-                <textarea
-                  name="description"
-                  minLength={5}
-                  maxLength={10000}
-                  required
-                  rows={3}
-                  placeholder="Describe the issue using fictional information only."
-                />
-              </label>
-              <label>
-                Location
-                <input
-                  name="location"
-                  minLength={2}
-                  maxLength={120}
-                  required
-                  placeholder="Example facility"
-                />
-              </label>
-              <div className="form-grid">
-                <label>
-                  Type
-                  <select name="kind">
-                    <option value="maintenance">Maintenance</option>
-                    <option value="inspection">Inspection</option>
-                  </select>
-                </label>
-                <label>
-                  Category
-                  <select name="category">
-                    {categories.map((c) => (
-                      <option key={c}>{c}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Priority
-                  <select name="priority" defaultValue="medium">
-                    {priorities.map((p) => (
-                      <option key={p} value={p}>
-                        {label(p)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Due date
-                  <input name="due_at" type="datetime-local" />
-                </label>
-              </div>
-              {error && (
-                <p role="alert" className="error">
-                  {error}
-                </p>
-              )}
-              <button className="primary full" disabled={busy}>
-                Create request
-              </button>
-            </form>
-          </section>
-        </div>
+        <TicketForm
+          user={user}
+          linked={!!linkSource}
+          busy={busy}
+          error={error}
+          onClose={closeDialog}
+          onSubmit={(data) =>
+            void run(async () => {
+              if (linkSource) {
+                const result = await api<{ id: number; visible: boolean }>(
+                  `/tickets/${linkSource.id}/tasks`,
+                  json("POST", data),
+                );
+                setNotice(
+                  result.visible
+                    ? "Linked task created. The receiving team can work it independently."
+                    : "Restricted task delivered to Cybersecurity. Its details are visible only to cybersecurity staff and administrators.",
+                );
+              } else {
+                const result = await api<Order>("/tickets", json("POST", data));
+                setNotice(
+                  result.restricted &&
+                    user.team !== "cybersecurity" &&
+                    user.role !== "administrator"
+                    ? "Restricted task delivered to Cybersecurity."
+                    : `${ticketId(result.id)} created. Find it in the destination team's queue.`,
+                );
+              }
+              setCreating(false);
+              setLinkSource(null);
+              setPage(0);
+              await refresh();
+            })
+          }
+        />
       )}
-      {selected && (
-        <div className="modal-backdrop">
-          <section
-            className="modal detail-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="detail-title"
-          >
-            <div className="panel-title">
-              <span className="eyebrow">
-                WO-{String(selected.id).padStart(4, "0")}
-              </span>
-              <button
-                aria-label="Close work order"
-                className="icon-button"
-                onClick={() => setSelected(null)}
-              >
-                <X />
-              </button>
-            </div>
-            <h2 id="detail-title">{selected.title}</h2>
-            <p className="muted">
-              {selected.location} · {selected.category} · {label(selected.kind)}
-            </p>
-            <span className={`badge status-${selected.status}`}>
-              <i />
-              {label(selected.status)}
-            </span>
-            <p className="description">{selected.description}</p>
-            {selected.status !== "closed" && user.role !== "requester" && (
-              <form
-                key={`${selected.id}-${selected.status}-${selected.assignee_id}-${selected.priority}`}
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const data = new FormData(e.currentTarget);
-                  const body: Record<string, unknown> = {
-                    note: data.get("note"),
-                  };
-                  if (data.get("status") !== selected.status)
-                    body.status = data.get("status");
-                  if (manager) {
-                    if (data.get("priority") !== selected.priority)
-                      body.priority = data.get("priority");
-                    if (
-                      data.get("assignee_id") &&
-                      Number(data.get("assignee_id")) !== selected.assignee_id
-                    )
-                      body.assignee_id = Number(data.get("assignee_id"));
-                  }
-                  void run(() => patch(body));
-                }}
-              >
-                <div className="form-grid">
-                  {manager && (
-                    <>
-                      <label>
-                        Assign technician
-                        <select
-                          name="assignee_id"
-                          defaultValue={selected.assignee_id || ""}
-                        >
-                          <option value="">Choose a technician</option>
-                          {users
-                            .filter((u) => u.role === "technician")
-                            .map((u) => (
-                              <option value={u.id} key={u.id}>
-                                {u.name}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <label>
-                        Priority
-                        <select
-                          name="priority"
-                          defaultValue={selected.priority}
-                        >
-                          {priorities.map((p) => (
-                            <option key={p} value={p}>
-                              {label(p)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </>
-                  )}
-                  <label>
-                    Status
-                    <select name="status" defaultValue={selected.status}>
-                      {[
-                        selected.status,
-                        ...({
-                          submitted: [],
-                          assigned: ["in_progress"],
-                          in_progress: ["completed"],
-                          completed: manager
-                            ? ["closed", "in_progress"]
-                            : ["in_progress"],
-                        }[selected.status] || []),
-                      ].map((s) => (
-                        <option key={s} value={s}>
-                          {label(s)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Update note
-                    <input
-                      name="note"
-                      maxLength={2000}
-                      placeholder="Add a brief progress note"
-                    />
-                  </label>
-                </div>
-                <button className="primary" disabled={busy}>
-                  Save update
-                </button>
-              </form>
-            )}
-            <h3>Sample attachments</h3>
-            <div className="attachment-actions">
-              {attachments.map((a) => (
-                <button
-                  key={a.id}
-                  onClick={() =>
-                    void run(() =>
-                      download(
-                        `/work-orders/${selected.id}/attachments/${a.id}`,
-                        a.filename,
-                      ),
-                    )
-                  }
-                >
-                  <ArrowDownToLine size={14} />
-                  {a.filename}
-                </button>
-              ))}
-              {selected.status !== "closed" && (
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await api(
-                        `/work-orders/${selected.id}/attachments`,
-                        json("POST", {
-                          sample_key:
-                            selected.kind === "inspection"
-                              ? "inspection-checklist"
-                              : "maintenance-note",
-                        }),
-                      );
-                      await openOrder(selected);
-                    })
-                  }
-                >
-                  <Plus size={14} /> Attach sample file
-                </button>
-              )}
-            </div>
-            <small className="muted">
-              Only built-in fictional sample files are available.
-            </small>
-            <h3>Activity & status history</h3>
-            <div className="timeline">
-              {events.map((event) => (
-                <div key={event.id}>
-                  <span className="timeline-dot" />
-                  <strong>{event.detail}</strong>
-                  <small>
-                    {date(event.created_at)} ·{" "}
-                    {users.find((u) => u.id === event.actor_id)?.name ||
-                      `User #${event.actor_id}`}
-                  </small>
-                </div>
-              ))}
-            </div>
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
-          </section>
-        </div>
+      {selected && !creating && (
+        <TicketDetail
+          key={`${selected.id}-${selected.team}`}
+          ticket={selected}
+          user={user}
+          users={users}
+          events={events}
+          comments={comments}
+          attachments={attachments}
+          related={related}
+          busy={busy}
+          error={error}
+          onClose={closeDialog}
+          onPatch={(body) =>
+            void run(async () => {
+              const ticket = await api<Order>(
+                `/tickets/${selected.id}`,
+                json("PATCH", body),
+              );
+              await openOrder(ticket);
+              await refresh();
+            })
+          }
+          onReply={async (body, internal) => {
+            setBusy(true);
+            setError("");
+            try {
+              await api(
+                `/tickets/${selected.id}/comments`,
+                json("POST", { body, internal }),
+              );
+              await openOrder(selected);
+              await refresh();
+            } catch (e) {
+              setError((e as Error).message);
+              throw e;
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onLink={() => {
+            setLinkSource(selected);
+            setSelected(null);
+            setCreating(true);
+            setError("");
+          }}
+          onOpen={(ticket) => void run(() => openOrder(ticket))}
+          onDownload={(file) =>
+            void run(() =>
+              download(
+                `/tickets/${selected.id}/attachments/${file.id}`,
+                file.filename,
+              ),
+            )
+          }
+          onAttach={() =>
+            void run(async () => {
+              await api(
+                `/tickets/${selected.id}/attachments`,
+                json("POST", {
+                  sample_key:
+                    selected.kind === "change"
+                      ? "change-checklist"
+                      : "troubleshooting-note",
+                }),
+              );
+              await openOrder(selected);
+            })
+          }
+        />
       )}
     </div>
   );

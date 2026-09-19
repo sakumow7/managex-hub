@@ -1,71 +1,181 @@
-"""Explicit, idempotent seed command. Never run automatically in production."""
+"""Add fictional IT scenarios once, preserving existing accounts and records."""
 
 import os
 from datetime import timedelta
-
 from sqlalchemy import select
-
 from .db import SessionLocal
-from .models import AuditEvent, User, WorkOrder, utcnow
+from .models import AuditEvent, Comment, TicketLink, User, WorkOrder, utcnow
 from .security import passwords
 
 
 def seed():
     password = os.environ.get("DEMO_PASSWORD")
     if not password or len(password) < 12:
-        raise SystemExit("Set DEMO_PASSWORD to at least 12 characters before seeding.")
+        raise SystemExit("Set DEMO_PASSWORD to at least 12 characters.")
     with SessionLocal() as db:
-        if db.scalar(select(User).limit(1)):
-            print("Database already contains users; no sample data added.")
-            return
         accounts = {}
-        for role, name in [
-            ("requester", "Alex Morgan"),
-            ("technician", "Jordan Ellis"),
-            ("supervisor", "Taylor Reed"),
-            ("administrator", "Casey Brooks"),
+        for email, name, role, team in [
+            ("requester", "Alex Morgan", "requester", "cst"),
+            ("technician", "Jordan Ellis", "technician", "cst"),
+            ("supervisor", "Taylor Reed", "supervisor", "cst"),
+            ("administrator", "Casey Brooks", "administrator", "it_operations"),
+            ("cyber", "Morgan Chen", "technician", "cybersecurity"),
+            ("developer", "Sam Rivera", "technician", "development"),
+            ("operations", "Jamie Park", "technician", "it_operations"),
         ]:
-            account = User(email=f"{role}@example.com", name=name, role=role, password_hash=passwords.hash(password))
-            db.add(account)
-            db.flush()
-            accounts[role] = account
+            account = db.scalar(select(User).where(User.email == f"{email}@example.com"))
+            if not account:
+                account = User(
+                    email=f"{email}@example.com",
+                    name=name,
+                    role=role,
+                    team=team,
+                    password_hash=passwords.hash(password),
+                )
+                db.add(account)
+                db.flush()
+            accounts[email] = account
+        if db.scalar(select(AuditEvent).where(AuditEvent.action == "seed_it").limit(1)):
+            db.commit()
+            print("IT sample scenarios already exist; existing records were preserved.")
+            return
         samples = [
-            ("Air handler making unusual noise", "HVAC", "high", "in_progress", "North workshop", -1, "maintenance"),
-            ("Quarterly safety walk-through", "Safety", "medium", "assigned", "Community center", 2, "inspection"),
-            ("Dripping faucet in break room", "Plumbing", "low", "submitted", "South studio", 5, "maintenance"),
-            ("Replace corridor light fixture", "Electrical", "medium", "completed", "North workshop", 1, "maintenance"),
-            ("Check cooling system filters", "HVAC", "high", "submitted", "East library", 3, "inspection"),
-            ("Inspect emergency exit signage", "Safety", "medium", "closed", "Community center", -3, "inspection"),
+            (
+                "VPN disconnects after sign-in",
+                "Network",
+                "high",
+                "in_progress",
+                "DEMO-LAPTOP-01",
+                -1,
+                "support",
+                "cst",
+                "technician",
+            ),
+            (
+                "Shared printer unavailable",
+                "Hardware",
+                "medium",
+                "submitted",
+                "DEMO-PRINT-01",
+                1,
+                "support",
+                "cst",
+                None,
+            ),
+            (
+                "Request access to test application",
+                "Access",
+                "medium",
+                "assigned",
+                "Demo portal",
+                2,
+                "access_request",
+                "cst",
+                "technician",
+            ),
+            (
+                "Demo portal shows an error on save",
+                "Software",
+                "high",
+                "blocked",
+                "Demo portal",
+                1,
+                "support",
+                "cst",
+                "technician",
+            ),
+            (
+                "Investigate save validation bug",
+                "Software",
+                "high",
+                "assigned",
+                "Demo portal",
+                2,
+                "bug",
+                "development",
+                "developer",
+            ),
+            (
+                "Review simulated phishing report",
+                "Security",
+                "high",
+                "assigned",
+                "Fictional message",
+                1,
+                "security",
+                "cybersecurity",
+                "cyber",
+            ),
+            (
+                "Plan test workstation patch rollout",
+                "Systems",
+                "medium",
+                "submitted",
+                "Lab workstations",
+                5,
+                "change",
+                "it_operations",
+                None,
+            ),
+            (
+                "Restore demo display settings",
+                "Hardware",
+                "low",
+                "completed",
+                "DEMO-LAPTOP-02",
+                3,
+                "support",
+                "cst",
+                "technician",
+            ),
         ]
-        for index, (title, category, priority, status, location, due_days, kind) in enumerate(samples):
-            created = utcnow() - timedelta(days=8 + index)
-            order = WorkOrder(
+        tickets = []
+        for index, (title, category, priority, status, location, days, kind, team, agent) in enumerate(samples):
+            ticket = WorkOrder(
                 title=title,
-                description="Fictional demonstration request. Inspect the sample issue and record observations; no real facility or government data.",
+                description="Fictional IT evaluation scenario. Use sample observations only; no actual device identifiers, credentials, or workplace information.",
                 location=location,
                 category=category,
                 priority=priority,
                 status=status,
                 kind=kind,
-                requester_id=accounts["requester"].id,
-                assignee_id=accounts["technician"].id if status != "submitted" else None,
-                due_at=utcnow() + timedelta(days=due_days),
-                created_at=created,
-                closed_at=created + timedelta(days=4) if status == "closed" else None,
+                team=team,
+                restricted=team == "cybersecurity",
+                requester_id=accounts["requester" if team == "cst" else "technician"].id,
+                assignee_id=accounts[agent].id if agent else None,
+                due_at=utcnow() + timedelta(days=days),
+                created_at=utcnow() - timedelta(days=index + 1),
             )
-            db.add(order)
+            db.add(ticket)
             db.flush()
             db.add(
                 AuditEvent(
-                    work_order_id=order.id,
+                    work_order_id=ticket.id,
                     actor_id=accounts["administrator"].id,
-                    action="seeded",
-                    detail=f"Sample imported with status: {status}",
-                    created_at=created,
+                    action="seed_it",
+                    detail=f"Fictional IT scenario created with status: {status}",
                 )
             )
+            tickets.append(ticket)
+        db.add(TicketLink(source_id=tickets[3].id, target_id=tickets[4].id))
+        db.add(
+            Comment(
+                work_order_id=tickets[3].id,
+                author_id=accounts["technician"].id,
+                body="We reproduced the sample issue and are working with the development team.",
+                internal=False,
+            )
+        )
+        db.add(
+            Comment(
+                work_order_id=tickets[3].id,
+                author_id=accounts["technician"].id,
+                body="Internal sample note: check the validation handler in the demo environment.",
+                internal=True,
+            )
+        )
         db.commit()
-    print("Created four demo users and six fictional work orders.")
+    print("IT demo accounts and eight fictional scenarios are ready. Existing records were preserved.")
 
 
 if __name__ == "__main__":
