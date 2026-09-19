@@ -44,9 +44,15 @@ jobs:
 
   browser-and-containers:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        demo: ["false", "true"]
     env:
       BASE_URL: http://127.0.0.1:8080
       DEMO_PASSWORD: SamplePass123!
+      DEMO_ENABLED: ${{ matrix.demo }}
+      VITE_DEMO_MODE: ${{ matrix.demo }}
+      DEMO_E2E: ${{ matrix.demo }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -63,6 +69,7 @@ jobs:
       - run: cp .env.example .env
       - run: docker compose up --build -d --wait
       - run: docker compose exec -T api python -m app.seed
+        if: matrix.demo == 'false'
       - run: npm run test:e2e
         working-directory: frontend
       - name: Container diagnostics
@@ -72,7 +79,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-traces
+          name: browser-traces-demo-${{ matrix.demo }}
           path: frontend/test-results
       - if: always()
         run: docker compose down

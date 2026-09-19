@@ -4,17 +4,37 @@ from datetime import timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import get_db
+from .config import settings
+from .demo import router as demo_router
 from .models import Attachment, AuditEvent, Comment, Notification, TicketLink, User, WorkOrder, utcnow
 from .schemas import CommentCreate, Login, OrderCreate, OrderOut, OrderUpdate, SampleAttachment, UserCreate, UserOut
 from .security import DUMMY_HASH, create_token, current_user, passwords
 from .services import can_work, get_order, new_order, record, update_order, visible_orders
 
-app = FastAPI(title="ManageX Hub IT Workflow API", version="0.2.0")
+app = FastAPI(title="ManageX Hub Portfolio API", version="0.3.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings().cors_origins,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+app.include_router(demo_router)
+
+
+@app.middleware("http")
+async def response_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 SAMPLES = {
     "troubleshooting-note": "SAMPLE ONLY — CST troubleshooting record\nDevice: DEMO-LAPTOP\nObserved: Fictional VPN error\nAction: Verify client version and record the result.\n",
     "change-checklist": "SAMPLE ONLY — IT change checklist\n[ ] Document test result\n[ ] Confirm review\n[ ] Record rollback steps\n",
@@ -29,9 +49,17 @@ def health(db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
+@app.get("/api/live")
+def live():
+    # Platform probes must not keep a scale-to-zero database awake all day.
+    return {"status": "ok"}
+
+
 @app.post("/api/auth/login")
 def login(data: Login, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == data.email.strip().lower()))
+    if settings().demo_enabled:
+        raise HTTPException(403, "Use the portfolio role selector to start your own demo.")
+    user = db.scalar(select(User).where(User.email == data.email.strip().lower(), User.demo_workspace_id.is_(None)))
     valid = passwords.verify(data.password, user.password_hash if user else DUMMY_HASH)
     if not user or not valid:
         raise HTTPException(401, "Invalid email or password")
@@ -47,11 +75,13 @@ def me(user: User = Depends(current_user)):
 def users(user: User = Depends(current_user), db: Session = Depends(get_db)):
     if user.role == "requester":
         raise HTTPException(403, "Staff access required")
-    return db.scalars(select(User).order_by(User.name)).all()
+    return db.scalars(select(User).where(User.demo_workspace_id == user.demo_workspace_id).order_by(User.name)).all()
 
 
 @app.post("/api/users", response_model=UserOut, status_code=201)
 def create_user(data: UserCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if settings().demo_enabled:
+        raise HTTPException(403, "Account creation is disabled in the public demo")
     if user.role != "administrator":
         raise HTTPException(403, "Administrator access required")
     account = User(

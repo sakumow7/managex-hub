@@ -1,0 +1,29 @@
+# Only the API uses a compute instance. Free is explicit to avoid a paid default.
+# Create the frontend as a free Static Site using docs/deploy-free.md.
+services:
+  - type: web
+    name: managex-portfolio-api
+    runtime: python
+    plan: free
+    region: virginia
+    rootDir: backend
+    buildCommand: pip install -r requirements-lock.txt
+    startCommand: python -m app.start
+    healthCheckPath: /api/live
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.14
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DEMO_ENABLED
+        value: "true"
+      - key: CORS_ORIGINS
+        value: "[]"
+      - key: DEMO_MINUTES
+        value: "60"
+      - key: DEMO_MAX_WORKSPACES
+        value: "30"
+      - key: DEMO_MAX_MUTATIONS
+        value: "100"

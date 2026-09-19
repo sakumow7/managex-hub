@@ -1,5 +1,19 @@
 # Internal IT prototype architecture
 
+## Portfolio deployment mode
+
+Set DEMO_ENABLED=true to expose password-free portfolio sessions. The browser also uses VITE_DEMO_MODE=true at build time. Normal password login and account creation are disabled in this mode, and tokens for pre-existing ordinary accounts are rejected. No administrator identity is created for visitors.
+
+The additive `3c_portfolio_demo` revision creates demo_workspaces and nullable workspace foreign keys on users/work_orders. Existing records remain in the null workspace. `visible_orders` filters workspace equality before role/team/restriction policy; directory lookup, creation recipients, and assignment validation use the same boundary. Secondary resources first authorize their ticket. A supervisor has broad ordinary-ticket access only within their own workspace.
+
+Each workspace holds six users and eight fictional scenarios. A signed, purpose-specific workspace token permits switching among those six identities only; bearer API access uses a separate user token bound to both user and workspace. Binding the workspace also prevents a stale token from accessing a new workspace if SQLite reuses a deleted integer user ID. The API checks workspace existence and expiry on every authenticated request. In the browser, the switch token is stored only in sessionStorage to continue the same tab after reload; user tokens stay in memory. All API responses are marked no-store.
+
+The PostgreSQL workspace row lock serializes mutating requests against the change budget. A PostgreSQL transaction advisory lock serializes workspace creation/capacity checks/expired cleanup. Failed mutations roll back their budget increment. SQLite supports local exploration but does not provide the equivalent production concurrency guarantees. Expired data is deleted in foreign-key order on new workspace creation and startup. Cleanup touches only expired demo workspaces; it preserves normal records. The defaults are 60 minutes, 30 retained workspaces, and 100 successful mutations per workspace. These cap storage growth, not inbound network traffic.
+
+Render serves the React build as a free static site and the API as a free Python web service; Neon holds PostgreSQL data. CORS allows only configured frontend origins. `/api/live` is a cheap liveness probe; `/api/health` checks database connectivity when a visitor launches. The frontend explains startup delays and polls readiness only during that explicit action. Mutating requests are not automatically retried. Startup runs Alembic without requiring paid pre-deploy hooks.
+
+The remaining sections describe the original workflow policy, which also applies inside each demo workspace.
+
 ManageX Hub is a single-organization prototype for CST ticket tracking, with optional cross-team tasks. There is no billing, tenant model, or SaaS onboarding.
 
 ```mermaid
