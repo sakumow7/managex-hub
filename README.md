@@ -1,4 +1,57 @@
-# ManageX Hub
+# ManageX Hub — Portfolio Edition
+
+A full-stack IT service desk portfolio built with **React, TypeScript, FastAPI and PostgreSQL**. Visitors can launch a temporary workspace, switch between six perspectives, and try ticket intake, assignment, troubleshooting and cross-team handoffs. No signup or shared public password is required.
+
+**Start here:** [Project walkthrough](docs/portfolio.md) · [Host for free on Render + Neon](docs/deploy-free.md) · [Architecture and permissions](docs/architecture.md)
+
+![ManageX Hub portfolio landing page with six demo perspectives](docs/portfolio-preview.png)
+
+## Run the portfolio locally
+
+Requires Python 3.12 and Node.js 22.12+. SQLite works for local exploration; PostgreSQL is the hosting target.
+
+From `backend`:
+
+```sh
+python -m venv .venv
+# PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements-lock.txt
+cp .env.example .env
+# PowerShell: Copy-Item .env.example .env
+```
+
+Replace JWT_SECRET in backend/.env with a random value of at least 32 characters (`python -c "import secrets; print(secrets.token_urlsafe(48))"`), then run `python -m app.start`. This migrates the database and starts the API. Do not run the legacy seed for portfolio mode.
+
+In a second terminal, from `frontend`:
+
+```sh
+cp .env.example .env
+# PowerShell: Copy-Item .env.example .env
+npm ci
+npm run dev
+```
+
+Open http://127.0.0.1:5173. Choose a perspective and launch. Each visitor gets six fictional identities and eight scenarios in a separate workspace, with a default one-hour expiry. Reloading keeps a signed workspace-resume token in sessionStorage for that browser tab; access tokens remain in memory. Switching roles preserves that workspace's changes. Normal password login is disabled in public demo mode, and there is no public administrator persona.
+
+The existing authenticated local mode remains available below. Set DEMO_ENABLED=false in the backend and VITE_DEMO_MODE=false in the frontend to use it; rebuild frontend assets when changing build-time settings. The root Compose .env has both flags, defaulting to false for compatibility. Set both true for the portfolio UI in Docker.
+
+## Verify the portfolio
+
+From backend: `pytest -q` and `ruff check .`. From frontend: `npm run build`.
+
+With the API running in demo mode and frontend configured for demo mode:
+
+```powershell
+Set-Location frontend
+npx.cmd playwright install chromium
+$env:DEMO_E2E='true'
+npm.cmd run test:e2e
+```
+
+The portfolio browser suite checks role switching, requester/staff visibility, visitor isolation, mobile entry and server-wake feedback. To run the original four password-login workflows, use normal mode and seeded accounts, then unset DEMO_E2E. Optional E2E_PORT, API_PROXY_TARGET and PLAYWRIGHT_CHANNEL support alternate local ports and an installed browser. See [verification](docs/verification.md) for the results and limits of checks performed for this refactor.
+
+## Original local evaluation mode
 
 An internal IT workflow prototype focused on **CST trouble-ticket tracking**. Requesters report issues, supervisors triage and assign, agents troubleshoot and reply, and other departments receive linked tasks. There is no billing or SaaS onboarding.
 

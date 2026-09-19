@@ -18,7 +18,17 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { api, download, json, setToken } from "./api";
+import { api, ApiError, download, json, setToken } from "./api";
+import Portfolio from "./Portfolio";
+import {
+  demoEnabled,
+  personas,
+  savedDemo,
+  saveDemo,
+  type DemoResult,
+  type DemoSession,
+  type Persona,
+} from "./demo";
 import type {
   Attachment,
   Comment,
@@ -44,6 +54,9 @@ import { useDialog } from "./useDialog";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [demoSession, setDemoSession] = useState<DemoSession | null>(() =>
+    savedDemo(),
+  );
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -105,12 +118,21 @@ export default function App() {
       setStats(dashboard);
       setNotifications(inbox);
       setUsers(people);
+    } catch (e) {
+      if (version === refreshVersion.current) throw e;
     } finally {
       if (version === refreshVersion.current) setLoading(false);
     }
   }, [user, filters, page]);
   useEffect(() => {
-    refresh().catch((e) => setError(e.message));
+    refresh().catch((e) => {
+      if (e instanceof ApiError && e.status === 401) {
+        setToken("");
+        setUser(null);
+        saveDemo(null);
+        setDemoSession(null);
+      } else setError(e.message);
+    });
     return () => {
       refreshVersion.current++;
     };
@@ -123,7 +145,11 @@ export default function App() {
     try {
       await action();
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 401 && user) {
+        signOut();
+        saveDemo(null);
+        setDemoSession(null);
+      } else setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -162,7 +188,42 @@ export default function App() {
     setUsers([]);
     setNotifications([]);
     setNotice("");
+    setEvents([]);
+    setComments([]);
+    setAttachments([]);
+    setRelated([]);
+    setLoading(false);
   };
+  async function enterDemo(result: DemoResult) {
+    refreshVersion.current++;
+    closeDialog();
+    setOrders([]);
+    setStats(null);
+    setUsers([]);
+    setNotifications([]);
+    setEvents([]);
+    setComments([]);
+    setAttachments([]);
+    setRelated([]);
+    setToken(result.access_token);
+    const person = await api<User>("/auth/me");
+    setDemoSession(result);
+    saveDemo(result);
+    setUser(person);
+    navigate(person.role === "requester" ? "all" : person.team);
+  }
+  async function changePersona(persona: Persona) {
+    if (!demoSession) return;
+    await enterDemo(
+      await api<DemoResult>(
+        "/demo/switch",
+        json("POST", {
+          session_token: demoSession.session_token,
+          persona,
+        }),
+      ),
+    );
+  }
   const brand = (
     <div className="brand">
       <span className="brand-icon">
@@ -171,6 +232,7 @@ export default function App() {
       ManageX<span>Hub</span>
     </div>
   );
+  if (!user && demoEnabled) return <Portfolio onEnter={enterDemo} />;
   if (!user)
     return (
       <main className="login-layout">
@@ -307,9 +369,10 @@ export default function App() {
             ))}
         </nav>
         <div className="sidebar-foot">
-          <span className="sample-dot" /> Internal prototype
+          <span className="sample-dot" />{" "}
+          {demoEnabled ? "Portfolio demo" : "Internal prototype"}
           <p>
-            CST trouble tickets.
+            {demoEnabled ? "Your temporary demo." : "CST trouble tickets."}
             <br />
             Connected team workflows.
           </p>
@@ -328,6 +391,7 @@ export default function App() {
           <button
             className="icon-button"
             aria-label="Sign out"
+            disabled={busy}
             onClick={signOut}
           >
             <LogOut size={17} />
@@ -340,8 +404,44 @@ export default function App() {
             IT workspace <span className="slash">/</span>
             <strong>{title}</strong>
           </span>
-          <span className="environment">LOCAL PROTOTYPE</span>
+          <span className="environment">
+            {demoEnabled ? "PORTFOLIO DEMO" : "LOCAL PROTOTYPE"}
+          </span>
         </header>
+        {demoEnabled && demoSession && (
+          <section
+            className="demo-toolbar"
+            aria-label="Demo workspace controls"
+          >
+            <div>
+              <strong>Your demo workspace</strong>
+              <span>
+                Fictional data · Expires at{" "}
+                {new Date(demoSession.expires_at).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+              </span>
+            </div>
+            <label>
+              Explore as
+              <select
+                aria-label="Demo role"
+                value={demoSession.persona}
+                disabled={busy}
+                onChange={(e) =>
+                  void run(() => changePersona(e.target.value as Persona))
+                }
+              >
+                {Object.entries(personas).map(([key, item]) => (
+                  <option key={key} value={key}>
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </section>
+        )}
         <main className="content">
           <div className="page-heading">
             <div>
@@ -355,6 +455,7 @@ export default function App() {
             </div>
             <button
               className="primary"
+              disabled={busy}
               onClick={() => {
                 setError("");
                 setCreating(true);

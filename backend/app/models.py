@@ -10,6 +10,14 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+class DemoWorkspace(Base):
+    __tablename__ = "demo_workspaces"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    mutations: Mapped[int] = mapped_column(default=0, server_default="0")
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -18,6 +26,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(20))
     team: Mapped[str] = mapped_column(String(30), default="cst", server_default="cst")
     password_hash: Mapped[str] = mapped_column(String(255))
+    demo_workspace_id: Mapped[str | None] = mapped_column(ForeignKey("demo_workspaces.id"), index=True)
 
 
 class WorkOrder(Base):
@@ -37,6 +46,7 @@ class WorkOrder(Base):
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    demo_workspace_id: Mapped[str | None] = mapped_column(ForeignKey("demo_workspaces.id"), index=True)
 
 
 class AuditEvent(Base):

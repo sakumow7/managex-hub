@@ -21,7 +21,7 @@ def security_access(user):
 
 
 def visible_orders(user):
-    query = select(WorkOrder)
+    query = select(WorkOrder).where(WorkOrder.demo_workspace_id == user.demo_workspace_id)
     if not security_access(user):
         query = query.where(WorkOrder.restricted.is_(False))
     if user.role == "requester":
@@ -66,12 +66,21 @@ def new_order(db: Session, user: User, data: OrderCreate):
     values = data.model_dump()
     if data.kind == "security":
         values["team"] = "cybersecurity"
-    order = WorkOrder(**values, restricted=values["team"] == "cybersecurity", requester_id=user.id)
+    order = WorkOrder(
+        **values,
+        restricted=values["team"] == "cybersecurity",
+        requester_id=user.id,
+        demo_workspace_id=user.demo_workspace_id,
+    )
     db.add(order)
     db.flush()
     record(db, order, user, "created", "Status: submitted — ticket created")
     recipients = db.scalars(
-        select(User.id).where(User.role != "requester", or_(User.team == order.team, User.role == "administrator"))
+        select(User.id).where(
+            User.demo_workspace_id == user.demo_workspace_id,
+            User.role != "requester",
+            or_(User.team == order.team, User.role == "administrator"),
+        )
     ).all()
     notify(db, order, set(recipients) - {user.id})
     return order
@@ -102,7 +111,12 @@ def update_order(db: Session, order: WorkOrder, user: User, data: OrderUpdate):
         if not is_manager(user):
             raise HTTPException(403, "Only supervisors or administrators can assign")
         technician = db.get(User, data.assignee_id) if data.assignee_id else None
-        if technician is None or technician.role != "technician" or technician.team != order.team:
+        if (
+            technician is None
+            or technician.role != "technician"
+            or technician.team != order.team
+            or technician.demo_workspace_id != user.demo_workspace_id
+        ):
             raise HTTPException(422, "Assign an existing agent in the ticket's team")
         if order.status == "completed":
             raise HTTPException(409, "Reopen completed work before reassigning")
